@@ -1,56 +1,94 @@
 package com.sun.firestoredemo
 
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.EventListener
-import com.google.firebase.firestore.FirebaseFirestore
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.gms.tasks.Task
+import com.google.android.gms.tasks.Tasks
+import com.google.firebase.firestore.*
 import kotlinx.android.synthetic.main.activity_main.*
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        const val NUMBER_OF_SHARDS = 10
+    }
+
     private val db = FirebaseFirestore.getInstance()
-    private var currentPoint: Long? = 0L
+    private val pointRef: DocumentReference by lazy {
+        db.collection("boost").document("hai")
+    }
+    private var currentPoint: Long? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        createBoostCounter(pointRef, NUMBER_OF_SHARDS).addOnCompleteListener { showToast("Done") }
         setupPointListener()
         buttonBoost.setOnClickListener {
-            addPoint()
+            incrementPoint()
         }
     }
 
-    private fun addPoint() {
-        val pointMap = HashMap<String, Any>()
-        pointMap["point"] = currentPoint?.plus(1) as Any
-        db.collection("boost")
-            .document("3Kklje1XHMtYnNvsqUTV")
-            .update(pointMap)
-            .addOnSuccessListener { documentReference ->
-                showToast("Boost successfully")
-            }
-            .addOnFailureListener { exception ->
-                exception.message?.let { showToast(it) }
+    private fun incrementPoint(): Task<Void> {
+        val shardId = Math.floor(Math.random() * NUMBER_OF_SHARDS).toInt()
+        val shardRef = pointRef.collection("shards").document(shardId.toString())
+        return shardRef.update("count", FieldValue.increment(1))
+    }
+
+    private fun getCount(ref: DocumentReference): Task<Int> {
+        // Sum the count of each shard in the subcollection
+        return ref.collection("shards").get()
+            .continueWith { task ->
+                var count = 0
+                for (snap in task.result!!) {
+                    val shard = snap.toObject(Shard::class.java)
+                    count += shard.count!!
+                }
+                currentPoint = count.toLong()
+                count
             }
     }
 
     private fun setupPointListener() {
-        val pointRef = db.collection("boost").document("3Kklje1XHMtYnNvsqUTV")
-        pointRef.addSnapshotListener(EventListener<DocumentSnapshot> {snapshot, e ->
-            if (e != null) {
-                Log.w("MainActivity", "Listen failed.", e)
-                return@EventListener
-            }
+        db.collection("boost")
+            .document("hai")
+            .collection("shards")
+            .addSnapshotListener(EventListener<QuerySnapshot> { value, e ->
+                if (e != null) {
+                    Log.w("MainActivity", "Listen failed.", e)
+                    return@EventListener
+                }
 
-            if (snapshot != null && snapshot.exists()) {
-                currentPoint = snapshot.data?.get("point") as Long?
-                textPoint.text = currentPoint?.toString()
+                if (value != null) {
+                    getCount(pointRef)
+                    textPoint.text = currentPoint?.toString()
+                }
+            })
+    }
+
+    fun createBoostCounter(ref: DocumentReference, numShards: Int): Task<Void> {
+        // Initialize the counter document, then initialize each shard.
+        return ref.set(BoostCounter(numShards))
+            .continueWithTask { task ->
+                if (!task.isSuccessful) {
+                    throw task.exception!!
+                }
+
+                val tasks = arrayListOf<Task<Void>>()
+
+                // Initialize each shard with count=0
+                for (i in 0 until numShards) {
+                    val makeShard = ref.collection("shards")
+                        .document(i.toString())
+                        .set(Shard(0), SetOptions.merge())
+                    tasks.add(makeShard)
+                }
+
+                Tasks.whenAll(tasks)
             }
-        })
     }
 }
 
