@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">FirestoreDemo</string>
+    <string name="boost">Boost</string>
 </resources>
